@@ -1,0 +1,59 @@
+# Builds FolderColorMenu.dll and publishes the release zip.
+# Push a tag like v1.0.0 to make a release; every other push and pull request
+# just checks that everything builds.
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build FolderColorMenu.dll
+        shell: powershell
+        run: |
+          python -m pip install --disable-pip-version-check ziglang==0.16.0
+          ./build.ps1
+
+      - name: Build FolderColor.exe and the icons (smoke test)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          New-Item -ItemType Directory -Force out | Out-Null
+          & $csc /nologo /target:winexe /optimize+ /codepage:65001 /reference:System.Drawing.dll /out:out\FolderColor.exe src\FolderColor.cs src\IconBuilder.cs
+          if ($LASTEXITCODE -ne 0) { throw 'csc failed' }
+          $specs = (Get-Content colors.json -Raw | ConvertFrom-Json) | ForEach-Object { '{0}={1}' -f $_.id, ($_.ramp -join ',') }
+          $p = Start-Process out\FolderColor.exe -Wait -PassThru -NoNewWindow -RedirectStandardError out\err.txt -ArgumentList (@('build-icons', 'out\icons', 'out\Assets') + $specs)
+          if ($p.ExitCode -ne 0) { throw "build-icons failed: $(Get-Content out\err.txt -Raw)" }
+          Get-ChildItem out\icons, out\Assets
+
+      - name: Package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = 'dist\win11-folder-colors'
+          New-Item -ItemType Directory -Force "$stage\bin", "$stage\src", "$stage\package" | Out-Null
+          Copy-Item install.cmd, install.ps1, uninstall.cmd, uninstall.ps1, build.ps1, colors.json, README.md, LICENSE $stage
+          Copy-Item bin\FolderColorMenu.dll "$stage\bin"
+          Copy-Item src\* "$stage\src"
+          Copy-Item package\AppxManifest.xml "$stage\package"
+          Compress-Archive "$stage\*" dist\win11-folder-colors.zip
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME dist\win11-folder-colors.zip --title $env:GITHUB_REF_NAME --generate-notes

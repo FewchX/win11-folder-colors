@@ -1,0 +1,10 @@
+[
+  { "id": "red",      "label": "Red",      "ramp": ["#b3202b", "#e5484d", "#ff9e9e"] },
+  { "id": "orange",   "label": "Orange",   "ramp": ["#c4520c", "#f5812a", "#ffc08a"] },
+  { "id": "green",    "label": "Green",    "ramp": ["#1d7f39", "#36ad5b", "#92e2a6"] },
+  { "id": "teal",     "label": "Teal",     "ramp": ["#08787a", "#1aa9a8", "#86e3de"] },
+  { "id": "blue",     "label": "Blue",     "ramp": ["#1c58c2", "#3b82f6", "#9fc6ff"] },
+  { "id": "purple",   "label": "Purple",   "ramp": ["#5f2fc0", "#8b5cf0", "#cdb3ff"] },
+  { "id": "pink",     "label": "Pink",     "ramp": ["#bb2672", "#e9579f", "#ffb0d6"] },
+  { "id": "graphite", "label": "Graphite", "ramp": ["#33373d", "#5a6068", "#a3aab3"] }
+]

@@ -1,0 +1,4 @@
+LIBRARY FolderColorMenu
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE
