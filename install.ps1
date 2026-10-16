@@ -11,9 +11,10 @@
 # Safe to re-run: rebuilds everything and re-registers. Folders that are
 # already colored keep their colors.
 #
-#   -Classic   install only the classic registry entry, skip the package
+#   -Classic       install only the classic registry entry, skip the package
+#   -NoGitIgnore   don't add desktop.ini to git's global ignore file
 
-param([switch]$Classic)
+param([switch]$Classic, [switch]$NoGitIgnore)
 
 $ErrorActionPreference = 'Stop'
 
@@ -161,6 +162,45 @@ if (-not $packaged) {
         Add-Item ('{0:D2}_{1}' -f $i, $c.id) $c.label (Join-Path $dest "icons\$($c.id).ico") "`"$exe`" set $($c.id) `"%1`""
     }
     Add-Item '99_reset' $resetLabel "$env:WINDIR\System32\imageres.dll,-3" "`"$exe`" reset `"%1`"" -SeparatorBefore
+}
+
+# --- git -------------------------------------------------------------------------------
+# File Explorer reads a folder's icon only from the desktop.ini inside it, so a
+# colored folder always has one. Listing it in git's global ignore file keeps it
+# out of every repository on this PC, also ones created later in an already
+# colored folder - GitHub's standard Windows .gitignore ignores it the same way.
+# uninstall.ps1 removes these lines again, found by the marker comment.
+$gitMarker = '# Folder Colors: folder icon files stay out of git'
+
+function Get-GlobalGitIgnorePath {
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $git) { return $null }
+    $ErrorActionPreference = 'Continue'
+    $userHome = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+    $configured = & $git.Source config --global --get core.excludesFile 2>$null
+    if ($configured) {
+        $configured = "$configured".Trim()
+        if ($configured.StartsWith('~')) { $configured = Join-Path $userHome $configured.Substring(1).TrimStart('/', '\') }
+        return [IO.Path]::GetFullPath($configured)
+    }
+    # git's default when core.excludesFile isn't set
+    $config = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $userHome '.config' }
+    return Join-Path $config 'git\ignore'
+}
+
+if (-not $NoGitIgnore) {
+    $ignoreFile = Get-GlobalGitIgnorePath
+    if ($ignoreFile) {
+        $existing = if (Test-Path $ignoreFile) { [IO.File]::ReadAllText($ignoreFile) } else { '' }
+        if ($existing -notmatch '(?im)^\s*(\*\*/|/)?(\[Dd\]|[Dd])esktop\.ini\s*$') {
+            New-Item -ItemType Directory -Force (Split-Path $ignoreFile) | Out-Null
+            $prefix = if ($existing.Length -gt 0 -and -not $existing.EndsWith("`n")) { "`n" } else { '' }
+            [IO.File]::AppendAllText($ignoreFile, "$prefix$gitMarker`n[Dd]esktop.ini`n", (New-Object Text.UTF8Encoding $false))
+            # for uninstall.ps1: which file to take the lines out of
+            [IO.File]::WriteAllText((Join-Path $dest 'git-ignore.txt'), $ignoreFile, (New-Object Text.UTF8Encoding $false))
+            Write-Host "git: desktop.ini is now ignored in every repository ($ignoreFile)."
+        }
+    }
 }
 
 # --- Settings > Apps > Installed apps --------------------------------------------------

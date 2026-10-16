@@ -47,6 +47,26 @@ Get-AppxPackage -Name 'Local.FolderColors' | Remove-AppxPackage
 
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FolderColors'
 if (Test-Path $uninstallKey) { Remove-Item $uninstallKey -Recurse -Force }
+
+# the two lines install.ps1 added to git's global ignore file, if it added them
+$gitRecord = Join-Path $dest 'git-ignore.txt'
+if (-not $KeepColors -and (Test-Path $gitRecord)) {
+    $ignoreFile = [IO.File]::ReadAllText($gitRecord).Trim()
+    if (Test-Path $ignoreFile) {
+        $lines = [IO.File]::ReadAllLines($ignoreFile)
+        $kept = New-Object System.Collections.Generic.List[string]
+        for ($i = 0; $i -lt $lines.Length; $i++) {
+            if ($lines[$i] -eq '# Folder Colors: folder icon files stay out of git') {
+                if ($i + 1 -lt $lines.Length -and $lines[$i + 1] -eq '[Dd]esktop.ini') { $i++ }
+                continue
+            }
+            $kept.Add($lines[$i])
+        }
+        if ($kept.Count -eq 0) { Remove-Item $ignoreFile }
+        else { [IO.File]::WriteAllLines($ignoreFile, $kept.ToArray(), (New-Object Text.UTF8Encoding $false)) }
+    }
+}
+
 if (-not $KeepColors -and (Test-Path $dest)) { Remove-Item $dest -Recurse -Force }
 
 Write-Host 'Folder Colors has been removed.'

@@ -11,7 +11,7 @@ recolored version of the native Windows 11 folder icon. Nothing inside the folde
 - Works on several selected folders at once.
 - **Reset to default** brings back the stock icon.
 - No admin rights, no background process, nothing runs until you click the menu.
-- Folders inside git repositories stay clean: `git status` doesn't change.
+- `desktop.ini` stays out of git in every repository, with no `.gitignore` edits.
 
 ## Install
 
@@ -71,9 +71,20 @@ the folder as usual. If the folder already had a `desktop.ini` (Documents, Downl
 special folders do), everything else in it is kept, and **Reset to default** brings back the
 folder's own icon.
 
-If the folder is inside a git repository, `desktop.ini` is added to that repository's local
-`.git/info/exclude`, so it never shows up as a new file and never gets committed. That file is
-local to your clone and isn't shared.
+### And git?
+
+`desktop.ini` never ends up in your repositories, and you don't need to add it to any
+`.gitignore`. The installer adds it once to git's global ignore file, which every repository on
+your PC reads. That includes repositories you create later in a folder that's already colored.
+The file is `~/.config/git/ignore`, or the file set in `core.excludesFile` if you have one.
+GitHub's standard Windows `.gitignore` template ignores `desktop.ini` the same way. Uninstall
+removes the line again. To skip this, install with `install.ps1 -NoGitIgnore`.
+
+As a second layer, a folder colored inside an existing repository also gets the line in that
+repository's local `.git/info/exclude`. It's local to your clone and never committed or shared.
+
+Why not keep `desktop.ini` somewhere else? File Explorer reads a folder's custom icon only from
+the `desktop.ini` inside that folder. There's no setting to point it elsewhere.
 
 Things worth knowing:
 
