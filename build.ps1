@@ -2,8 +2,9 @@
 # Release zips already contain it. install.ps1 runs this when the DLL is missing
 # and the toolchain below is available, and downloads the released DLL otherwise.
 #
-# Needs Python with the ziglang package (pip install ziglang==0.16.0), which
-# brings a complete C++ toolchain for Windows - no Visual Studio required.
+# Needs Python with the ziglang package, which brings a complete C++ toolchain
+# for Windows - no Visual Studio required. Install the exact pinned wheel with
+#   python -m pip install --require-hashes -r requirements-build.txt
 #
 #   -Python <exe>   the Python to use (default: python on PATH)
 
@@ -19,10 +20,11 @@ New-Item -ItemType Directory -Force $out | Out-Null
 $ErrorActionPreference = 'Continue'
 & $Python -c 'import ziglang' 2>$null
 if ($LASTEXITCODE -ne 0) {
-    throw "Python package 'ziglang' not found. Install it with: $Python -m pip install ziglang==0.16.0"
+    throw "Python package 'ziglang' not found. Install it with: $Python -m pip install --require-hashes -r $(Join-Path $root 'requirements-build.txt')"
 }
 
-& $Python -m ziglang c++ -shared -O2 -target x86_64-windows-gnu -municode -w `
+# -Os -s: optimized for size, no symbols (about 180 KB instead of 440 KB)
+& $Python -m ziglang c++ -shared -Os -s -target x86_64-windows-gnu -municode -w `
     -o (Join-Path $out 'FolderColorMenu.dll') `
     (Join-Path $root 'src\FolderColorMenu.cpp') (Join-Path $root 'src\FolderColorMenu.def') `
     -lole32 -lshlwapi -lshell32

@@ -59,7 +59,11 @@ static class IconBuilder
             int eq = args[i].IndexOf('=');
             string[] hex = eq > 0 ? args[i].Substring(eq + 1).Split(',') : new string[0];
             if (hex.Length != 3) throw new ArgumentException("Bad color spec: " + args[i]);
-            ids.Add(args[i].Substring(0, eq));
+            string id = args[i].Substring(0, eq);
+            // the id names a file next to menu.ico, and "reset" is a menu command
+            if (!FolderColor.IsColorId(id) || id == "menu" || id == "reset")
+                throw new ArgumentException("Bad color id: " + id);
+            ids.Add(id);
             ramps.Add(new Ramp { Dark = Rgb(hex[0]), Mid = Rgb(hex[1]), Light = Rgb(hex[2]) });
         }
 
@@ -272,9 +276,9 @@ static class IconBuilder
             }
             foreach (byte[] b in blobs) w.Write(b);
         }
-        // folders already pointing at this file keep working while it is replaced
-        if (File.Exists(path)) File.Delete(path);
-        File.Move(tmp, path);
+        // swapped in one step: folders already pointing at this file never see it missing
+        if (File.Exists(path)) File.Replace(tmp, path, null, true);
+        else File.Move(tmp, path);
     }
 
     static byte[] Dib(Frame f)

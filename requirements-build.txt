@@ -1,0 +1,6 @@
+# C++ toolchain for build.ps1 (FolderColorMenu.dll), pinned to exact wheels:
+#   python -m pip install --require-hashes -r requirements-build.txt
+ziglang==0.16.0 \
+    --hash=sha256:089a16a4eb5a2f45151993342f8fabad24ff1a0723dc146642895c29208a3939 \
+    --hash=sha256:e44a5271f7b72f7980017bb615823ed52e765f96b6482d93a2fd338cd53101bf \
+    --hash=sha256:f978c12b5337cf418034964de00023b7ec5ec484383dc97c6a6585f4a9105840

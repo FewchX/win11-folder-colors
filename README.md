@@ -21,14 +21,20 @@ recolored version of the native Windows 11 folder icon. Nothing inside the folde
 irm https://raw.githubusercontent.com/FewchX/win11-folder-colors/main/get.ps1 | iex
 ```
 
+It downloads the latest release, checks it against the SHA-256 that GitHub lists for the file
+and runs its installer. [`get.ps1`](get.ps1) is 30 lines; read it first if you like.
+
 **Or manually**: download `win11-folder-colors.zip` from the
 [latest release](https://github.com/FewchX/win11-folder-colors/releases/latest), extract it and
 double-click `install.cmd`. If Windows shows "Windows protected your PC", click
-**More info → Run anyway**: the scripts aren't signed.
+**More info → Run anyway**: the scripts aren't signed. The release page shows the file's
+SHA-256 next to it.
 
 The source code (**Code → Download ZIP** or `git clone`) installs the same way with
 `install.cmd`. It has no prebuilt files, so the installer downloads the one it needs,
-`FolderColorMenu.dll`, from the latest release.
+`FolderColorMenu.dll`, from the release of the same version and checks its SHA-256.
+
+Installing again (a newer version, or after editing the colors) keeps every folder's color.
 
 ### Developer Mode
 
@@ -55,7 +61,8 @@ moment, then the color.
 
 **Settings → Apps → Installed apps → Folder Colors → Uninstall**, or run `uninstall.cmd` from
 the zip. Every folder you colored is reset to the stock icon first. To remove the menu and keep
-the colors, run `uninstall.ps1 -KeepColors`.
+the colors, run `uninstall.ps1 -KeepColors`: only the icons stay behind. To reset those folders
+later, install again and uninstall normally.
 
 ## Is it safe for my files?
 
@@ -69,7 +76,13 @@ in File Explorer, which Windows itself uses for Documents, Downloads and other s
 Files and subfolders inside are never read, moved or modified, and you can keep working in
 the folder as usual. If the folder already had a `desktop.ini` (Documents, Downloads and other
 special folders do), everything else in it is kept, and **Reset to default** brings back the
-folder's own icon.
+folder's own icon. Reset only ever undoes a color set by Folder Colors: on a folder with an
+icon of its own (Desktop, a OneDrive folder, one customized in Properties) it changes nothing.
+
+Folder Colors also refuses to touch a `desktop.ini` that is a link to another file, as one
+from a downloaded archive or repository could be, so its writes can't land anywhere else.
+`desktop.ini` refers to the icons as `%LOCALAPPDATA%\...`, so it doesn't contain your user name
+when the folder is synced or shared.
 
 ### And git?
 
@@ -77,11 +90,13 @@ folder's own icon.
 `.gitignore`. The installer adds it once to git's global ignore file, which every repository on
 your PC reads. That includes repositories you create later in a folder that's already colored.
 The file is `~/.config/git/ignore`, or the file set in `core.excludesFile` if you have one.
-GitHub's standard Windows `.gitignore` template ignores `desktop.ini` the same way. Uninstall
-removes the line again. To skip this, install with `install.ps1 -NoGitIgnore`.
+GitHub's standard Windows `.gitignore` template ignores `desktop.ini` the same way. The line is
+added even if git isn't installed yet, so it's in place once you install it. Uninstall removes
+it again. To skip this, install with `install.ps1 -NoGitIgnore`. Nothing inside your
+repositories, `.git` included, is ever touched.
 
-As a second layer, a folder colored inside an existing repository also gets the line in that
-repository's local `.git/info/exclude`. It's local to your clone and never committed or shared.
+Version 1.0 also added the line to each repository's `.git/info/exclude`. Installing 1.1 or
+later removes those lines again, since the global ignore file covers them.
 
 Why not keep `desktop.ini` somewhere else? File Explorer reads a folder's custom icon only from
 the `desktop.ini` inside that folder. There's no setting to point it elsewhere.
@@ -97,7 +112,7 @@ Things worth knowing:
   Folder Colors the folder just looks like a normal folder.
 - **Where the icons live.** Colored folders point to the icons in
   `%LOCALAPPDATA%\Programs\FolderColors\icons`. Uninstall resets the folders before it deletes
-  the icons.
+  the icons. A synced folder shows its color on every PC that has Folder Colors installed.
 
 ## Change the colors
 
@@ -110,33 +125,37 @@ Explorer may keep showing the old shade until it refreshes its icon cache.
 
 | Part | What it does |
 |---|---|
-| `src/FolderColor.cs` | `FolderColor.exe`: writes `desktop.ini`, sets the attribute, updates `.git/info/exclude`, tells Explorer to refresh. Also builds the icons. |
+| `src/FolderColor.cs` | `FolderColor.exe`: writes `desktop.ini`, sets the attribute, tells Explorer to refresh. Runs one at a time, so quick clicks can't mix up their edits. Also builds the icons. |
 | `src/IconBuilder.cs` | Recolors the stock folder icon (`imageres.dll`) at every size with a gradient map that keeps the native shading. |
-| `src/FolderColorMenu.cpp` | `FolderColorMenu.dll`: the `IExplorerCommand` handler behind the menu. It only builds the menu and starts `FolderColor.exe`. |
+| `src/FolderColorMenu.cpp` | `FolderColorMenu.dll`: the `IExplorerCommand` handler behind the menu. It only builds the menu (shown for folders on disk only) and starts `FolderColor.exe`. |
 | `package/AppxManifest.xml` | The local package that gives the DLL the identity the Windows 11 menu requires. |
-| `install.ps1` / `uninstall.ps1` | Install into `%LOCALAPPDATA%\Programs\FolderColors` for the current user. |
+| `install.ps1` / `uninstall.ps1` | Install into `%LOCALAPPDATA%\Programs\FolderColors` for the current user. The installer builds everything before it replaces the previous version. |
+| `tests/run-tests.ps1` | End-to-end tests on throwaway folders, run by CI on every push. |
 
 The repository contains no Microsoft artwork. The installer builds the icons on your PC from
 your own Windows folder icon, so they always match your Windows version. `FolderColor.exe` is
 compiled during install with the C# compiler that ships with Windows (.NET Framework 4).
 Only `FolderColorMenu.dll` comes prebuilt in the release zip, built by
-[GitHub Actions](.github/workflows/release.yml) from the source in this repository.
+[GitHub Actions](.github/workflows/release.yml) from the source in this repository, with the
+actions pinned to exact commits and the compiler to exact file hashes.
 
 ## Build from source
 
 Only `bin\FolderColorMenu.dll` needs a C++ compiler. When it's missing, `install.ps1` builds it
-if Python with the [ziglang](https://pypi.org/project/ziglang/) package is available
-(`pip install ziglang==0.16.0`, which includes a complete C++ toolchain, no Visual Studio
-needed), and otherwise downloads it from the latest release:
+if Python with the [ziglang](https://pypi.org/project/ziglang/) package is available (a
+complete C++ toolchain, no Visual Studio needed), and otherwise downloads it from the release:
 
 ```powershell
 git clone https://github.com/FewchX/win11-folder-colors
 cd win11-folder-colors
-.\build.ps1      # optional: builds bin\FolderColorMenu.dll
+python -m pip install --require-hashes -r requirements-build.txt   # optional: the compiler
+.\build.ps1                    # optional: builds bin\FolderColorMenu.dll
+.\tests\run-tests.ps1          # optional: tests on throwaway folders
 .\install.ps1
 ```
 
-Pushing a `v*` tag builds the release zip and publishes it on GitHub.
+Pushing a `v*` tag that matches the version in `package/AppxManifest.xml` builds the release
+zip, runs the tests and publishes it on GitHub.
 
 ## Troubleshooting
 
@@ -146,6 +165,10 @@ Pushing a `v*` tag builds the release zip and publishes it on GitHub.
   old picture for a moment.
 - **"Running scripts is disabled on this system".** Use `install.cmd`, or run
   `powershell -ExecutionPolicy Bypass -File install.ps1`.
+- **"A whole drive can't be colored".** A drive's icon doesn't come from `desktop.ini`; color the
+  folders on it instead.
+- **Very long paths.** Folders with a path longer than about 250 characters can't be colored;
+  you get an error message instead.
 
 ## License
 

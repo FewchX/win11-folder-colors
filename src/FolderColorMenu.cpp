@@ -53,9 +53,14 @@ static MenuSpec LoadMenu() {
     std::wstring path = ModuleDir() + L"\\menu.txt";
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return spec;
+    // a few hundred bytes in practice; anything bigger isn't ours
     DWORD size = GetFileSize(f, nullptr), read = 0;
+    if (size == INVALID_FILE_SIZE || size > 64 * 1024) {
+        CloseHandle(f);
+        return spec;
+    }
     std::string bytes(size, '\0');
-    ReadFile(f, &bytes[0], size, &read, nullptr);
+    if (size && !ReadFile(f, &bytes[0], size, &read, nullptr)) read = 0;
     CloseHandle(f);
     bytes.resize(read);
     if (bytes.size() >= 3 && bytes.compare(0, 3, "\xEF\xBB\xBF") == 0) bytes.erase(0, 3);
@@ -153,7 +158,10 @@ public:
 
     IFACEMETHODIMP Invoke(IShellItemArray *items, IBindCtx *) override {
         if (!items) return E_INVALIDARG;
-        std::wstring cmd = L"\"" + dir_ + L"\\FolderColor.exe\" " + (id_ == L"reset" ? L"reset" : L"set " + id_);
+        std::wstring exe = dir_ + L"\\FolderColor.exe";
+        std::wstring head = L"\"" + exe + L"\" " + (id_ == L"reset" ? L"reset" : L"set " + id_);
+        std::wstring cmd = head;
+        bool any = false;
         DWORD count = 0;
         items->GetCount(&count);
         for (DWORD i = 0; i < count; i++) {
@@ -162,27 +170,45 @@ public:
             LPWSTR path = nullptr;
             if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
                 std::wstring p(path);
+                CoTaskMemFree(path);
                 // a trailing backslash would escape the closing quote
                 if (!p.empty() && p.back() == L'\\') p += L'\\';
-                cmd += L" \"" + p + L"\"";
-                CoTaskMemFree(path);
+                std::wstring arg = L" \"" + p + L"\"";
+                // a command line holds 32767 characters: a huge selection goes
+                // in several runs, which FolderColor.exe takes one at a time
+                if (any && cmd.size() + arg.size() > kMaxCommandLine) {
+                    HRESULT hr = Run(exe, cmd);
+                    if (FAILED(hr)) {
+                        item->Release();
+                        return hr;
+                    }
+                    cmd = head;
+                }
+                cmd += arg;
+                any = true;
             }
             item->Release();
         }
+        return any ? Run(exe, cmd) : S_OK;
+    }
 
+private:
+    static const size_t kMaxCommandLine = 30000;
+
+    static HRESULT Run(const std::wstring &exe, const std::wstring &cmd) {
         std::vector<wchar_t> line(cmd.begin(), cmd.end());
         line.push_back(L'\0');
         STARTUPINFOW si = {};
         si.cb = sizeof si;
         PROCESS_INFORMATION pi = {};
-        if (!CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
+        // the exe by full path, never looked up through the command line
+        if (!CreateProcessW(exe.c_str(), line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
             return HRESULT_FROM_WIN32(GetLastError());
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         return S_OK;
     }
 
-private:
     std::wstring id_, label_, dir_;
 };
 
@@ -256,6 +282,16 @@ public:
     }
     IFACEMETHODIMP GetFlags(EXPCMDFLAGS *flags) override {
         *flags = ECF_HASSUBCOMMANDS;
+        return S_OK;
+    }
+    // Only folders on disk: hidden for libraries, This PC, zip files and
+    // selections that mix in anything else, where there'd be nothing to color.
+    IFACEMETHODIMP GetState(IShellItemArray *items, BOOL, EXPCMDSTATE *state) override {
+        const SFGAOF wanted = SFGAO_FILESYSTEM | SFGAO_FOLDER;
+        SFGAOF all = 0, any = 0;
+        bool folders = items && SUCCEEDED(items->GetAttributes(SIATTRIBFLAGS_AND, wanted, &all)) && all == wanted &&
+                       SUCCEEDED(items->GetAttributes(SIATTRIBFLAGS_OR, SFGAO_STREAM, &any)) && !(any & SFGAO_STREAM);
+        *state = folders ? ECS_ENABLED : ECS_HIDDEN;
         return S_OK;
     }
     IFACEMETHODIMP Invoke(IShellItemArray *, IBindCtx *) override { return E_NOTIMPL; }

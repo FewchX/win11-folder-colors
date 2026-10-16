@@ -18,13 +18,16 @@
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   IgnorableNamespaces="uap desktop4 desktop5 desktop6 com rescap">
 
-  <Identity Name="Local.FolderColors" Publisher="CN=FolderColors" Version="1.0.2.0" ProcessorArchitecture="x64" />
+  <Identity Name="Local.FolderColors" Publisher="CN=FolderColors" Version="1.1.0.0" ProcessorArchitecture="x64" />
 
   <Properties>
     <DisplayName>Folder Colors</DisplayName>
-    <PublisherDisplayName>personalisation</PublisherDisplayName>
+    <PublisherDisplayName>Folder Colors</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
-    <!-- FolderColor.exe runs inside the package: keep its writes (colored.txt) real -->
+    <!-- FolderColor.exe, started by the menu, runs with the package's identity:
+         without these, its writes (colored.txt, and whatever the shell records
+         for a folder) would go to a private copy of AppData and the registry
+         that the rest of Windows never sees -->
     <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
     <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
   </Properties>
