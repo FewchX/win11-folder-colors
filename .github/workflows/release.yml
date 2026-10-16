@@ -1,6 +1,8 @@
-# Builds FolderColorMenu.dll, runs the tests and packages the release zip.
-# Push a tag like v1.1.0 to publish a release; every other push and pull
-# request just checks that everything builds and the tests pass.
+# Builds FolderColorMenu.dll for x64 and ARM64, tests everything on both kinds
+# of Windows - FolderColor.exe, the menu DLL, and a real install and uninstall -
+# and packages the release zip. Push a tag like v1.2.0 to publish a release;
+# every other push and pull request just checks that everything builds and the
+# tests pass.
 #
 # Supply chain: actions are pinned to commits (Dependabot proposes updates),
 # the compiler to exact wheel hashes (requirements-build.txt), and the token
@@ -21,6 +23,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,25 +36,42 @@ jobs:
           $version = ([xml](Get-Content package\AppxManifest.xml -Raw)).Package.Identity.Version -replace '\.0$', ''
           if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME doesn't match the manifest version $version." }
 
-      - name: Build FolderColorMenu.dll
+      - name: Build FolderColorMenu.dll (x64, ARM64) and the test harness
         shell: powershell
         run: |
           python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r requirements-build.txt
           if ($LASTEXITCODE -ne 0) { throw 'Installing the toolchain failed.' }
-          ./build.ps1
+          ./build.ps1 -Tests
 
       - name: Test FolderColor.exe and the icons
         shell: powershell
         run: ./tests/run-tests.ps1
+
+      - name: Test the menu DLL
+        shell: powershell
+        run: ./tests/run-menu-tests.ps1 -Arch x64
+
+      # the menu package needs it; this VM is thrown away after the job
+      - name: Turn on Developer Mode
+        shell: powershell
+        run: |
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+          if (-not (Test-Path $key)) { New-Item $key | Out-Null }
+          Set-ItemProperty $key -Name AllowDevelopmentWithoutDevLicense -Value 1 -Type DWord
+
+      - name: Test install and uninstall
+        shell: powershell
+        run: ./tests/run-install-tests.ps1
 
       - name: Package
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $stage = 'dist\win11-folder-colors'
-          New-Item -ItemType Directory -Force "$stage\bin", "$stage\src", "$stage\package" | Out-Null
+          New-Item -ItemType Directory -Force "$stage\bin\x64", "$stage\bin\arm64", "$stage\src", "$stage\package" | Out-Null
           Copy-Item install.cmd, install.ps1, uninstall.cmd, uninstall.ps1, build.ps1, requirements-build.txt, colors.json, README.md, LICENSE $stage
-          Copy-Item bin\FolderColorMenu.dll "$stage\bin"
+          Copy-Item bin\x64\FolderColorMenu.dll "$stage\bin\x64"
+          Copy-Item bin\arm64\FolderColorMenu.dll "$stage\bin\arm64"
           Copy-Item src\* "$stage\src"
           Copy-Item package\AppxManifest.xml "$stage\package"
           Compress-Archive "$stage\*" dist\win11-folder-colors.zip
@@ -63,8 +83,49 @@ jobs:
           path: dist/win11-folder-colors.zip
           if-no-files-found: error
 
-  publish:
+      # for the ARM64 job: the same binaries, tested there natively
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binaries
+          path: |
+            bin/
+            tests/bin/
+          if-no-files-found: error
+
+  test-arm64:
     needs: build
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binaries
+
+      - name: Test FolderColor.exe and the icons
+        shell: powershell
+        run: ./tests/run-tests.ps1
+
+      - name: Test the menu DLL
+        shell: powershell
+        run: ./tests/run-menu-tests.ps1 -Arch arm64
+
+      - name: Turn on Developer Mode
+        shell: powershell
+        run: |
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+          if (-not (Test-Path $key)) { New-Item $key | Out-Null }
+          Set-ItemProperty $key -Name AllowDevelopmentWithoutDevLicense -Value 1 -Type DWord
+
+      - name: Test install and uninstall
+        shell: powershell
+        run: ./tests/run-install-tests.ps1
+
+  publish:
+    needs: [build, test-arm64]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

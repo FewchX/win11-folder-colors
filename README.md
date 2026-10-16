@@ -10,6 +10,8 @@ recolored version of the native Windows 11 folder icon. Nothing inside the folde
 - Lives in the **new Windows 11 context menu**, no "Show more options" needed.
 - Works on several selected folders at once.
 - **Reset to default** brings back the stock icon.
+- Rename or move a colored folder and it stays colored; uninstall still finds it.
+- On x64 and ARM64 PCs (Snapdragon, Surface Pro X and the like).
 - No admin rights, no background process, nothing runs until you click the menu.
 - `desktop.ini` stays out of git in every repository, with no `.gitignore` edits.
 
@@ -48,8 +50,8 @@ If it's off, the installer opens that page and waits for you. If you'd rather no
 type `C` there: you get the same menu under **Show more options** instead. The installer never
 changes this setting itself.
 
-Requirements: Windows 11 (Windows 10 works too, with the classic menu). Everything else the
-installer needs is part of Windows.
+Requirements: Windows 11 on an x64 or ARM64 PC (Windows 10 works too, with the classic menu).
+Everything else the installer needs is part of Windows.
 
 ## Use
 
@@ -60,9 +62,10 @@ moment, then the color.
 ## Uninstall
 
 **Settings → Apps → Installed apps → Folder Colors → Uninstall**, or run `uninstall.cmd` from
-the zip. Every folder you colored is reset to the stock icon first. To remove the menu and keep
-the colors, run `uninstall.ps1 -KeepColors`: only the icons stay behind. To reset those folders
-later, install again and uninstall normally.
+the zip. Every folder you colored is reset to the stock icon first, also ones you renamed or
+moved since (on the same drive). To remove the menu and keep the colors, run
+`uninstall.ps1 -KeepColors`: only the icons stay behind. To reset those folders later, install
+again and uninstall normally.
 
 ## Is it safe for my files?
 
@@ -113,6 +116,10 @@ Things worth knowing:
 - **Where the icons live.** Colored folders point to the icons in
   `%LOCALAPPDATA%\Programs\FolderColors\icons`. Uninstall resets the folders before it deletes
   the icons. A synced folder shows its color on every PC that has Folder Colors installed.
+- **Moved folders.** Folder Colors recognizes a folder by its file system ID, which stays the
+  same when the folder is renamed or moved on the same drive (NTFS or ReFS). A folder moved to
+  another drive is a copy there: it keeps its color, but uninstall can't find it. Reset it from
+  the menu before you uninstall, or color it again to have it tracked.
 
 ## Change the colors
 
@@ -125,32 +132,38 @@ Explorer may keep showing the old shade until it refreshes its icon cache.
 
 | Part | What it does |
 |---|---|
-| `src/FolderColor.cs` | `FolderColor.exe`: writes `desktop.ini`, sets the attribute, tells Explorer to refresh. Runs one at a time, so quick clicks can't mix up their edits. Also builds the icons. |
+| `src/FolderColor.cs` | `FolderColor.exe`: writes `desktop.ini`, sets the attribute, tells Explorer to refresh. Runs one at a time, so quick clicks can't mix up their edits. Keeps the list of colored folders, by path and file system ID. Also builds the icons. |
 | `src/IconBuilder.cs` | Recolors the stock folder icon (`imageres.dll`) at every size with a gradient map that keeps the native shading. |
 | `src/FolderColorMenu.cpp` | `FolderColorMenu.dll`: the `IExplorerCommand` handler behind the menu. It only builds the menu (shown for folders on disk only) and starts `FolderColor.exe`. |
 | `package/AppxManifest.xml` | The local package that gives the DLL the identity the Windows 11 menu requires. |
 | `install.ps1` / `uninstall.ps1` | Install into `%LOCALAPPDATA%\Programs\FolderColors` for the current user. The installer builds everything before it replaces the previous version. |
-| `tests/run-tests.ps1` | End-to-end tests on throwaway folders, run by CI on every push. |
+| `tests/run-tests.ps1` | `FolderColor.exe` end to end on throwaway folders: coloring, reset, odd paths, links, moved folders, parallel runs. |
+| `tests/run-menu-tests.ps1` | The menu DLL, driven by `tests/menu-harness.cpp` the way File Explorer does: where the menu shows, what it shows, and that its items work, also for 300 folders at once. |
+| `tests/run-install-tests.ps1` | A real install, use through the package and uninstall, also with `-Classic` and `-KeepColors`. CI only. |
+
+CI runs all three on x64 and on ARM64 Windows for every push, on fresh virtual machines.
 
 The repository contains no Microsoft artwork. The installer builds the icons on your PC from
 your own Windows folder icon, so they always match your Windows version. `FolderColor.exe` is
 compiled during install with the C# compiler that ships with Windows (.NET Framework 4).
-Only `FolderColorMenu.dll` comes prebuilt in the release zip, built by
-[GitHub Actions](.github/workflows/release.yml) from the source in this repository, with the
-actions pinned to exact commits and the compiler to exact file hashes.
+Only `FolderColorMenu.dll` comes prebuilt in the release zip, one for x64 and one for ARM64,
+built by [GitHub Actions](.github/workflows/release.yml) from the source in this repository,
+with the actions pinned to exact commits and the compiler to exact file hashes.
 
 ## Build from source
 
-Only `bin\FolderColorMenu.dll` needs a C++ compiler. When it's missing, `install.ps1` builds it
+Only `FolderColorMenu.dll` needs a C++ compiler. When it's missing, `install.ps1` builds it
 if Python with the [ziglang](https://pypi.org/project/ziglang/) package is available (a
-complete C++ toolchain, no Visual Studio needed), and otherwise downloads it from the release:
+complete C++ toolchain, no Visual Studio needed, that builds for x64 and ARM64 on either),
+and otherwise downloads it from the release:
 
 ```powershell
 git clone https://github.com/FewchX/win11-folder-colors
 cd win11-folder-colors
 python -m pip install --require-hashes -r requirements-build.txt   # optional: the compiler
-.\build.ps1                    # optional: builds bin\FolderColorMenu.dll
+.\build.ps1 -Tests             # optional: bin\x64 and bin\arm64\FolderColorMenu.dll, test harness
 .\tests\run-tests.ps1          # optional: tests on throwaway folders
+.\tests\run-menu-tests.ps1     # optional: tests the menu DLL (needs build.ps1 -Tests)
 .\install.ps1
 ```
 

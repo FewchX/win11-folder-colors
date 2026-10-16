@@ -6,26 +6,23 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'common.ps1')
 
 $root = Split-Path $PSScriptRoot
-$work = Join-Path ([IO.Path]::GetTempPath()) ('folder-colors-test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$work = New-TestFolder 'folder-colors-test-'
 $app = Join-Path $work 'app'
 $exe = Join-Path $app 'FolderColor.exe'
 $data = Join-Path $work 'data'
-$failures = 0
-
-function Check($name, [bool]$ok) {
-    if ($ok) { Write-Host "  ok    $name" }
-    else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
-}
 
 # runs FolderColor.exe; stderr goes to a file, so errors are reported there instead of a dialog
 function Invoke-FolderColor([string[]]$arguments) {
     $err = Join-Path $work 'stderr.txt'
+    $out = Join-Path $work 'stdout.txt'
     $quoted = $arguments | ForEach-Object { if ($_ -match '\s|^$') { "`"$_`"" } else { $_ } }
-    $p = Start-Process $exe -ArgumentList $quoted -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+    $p = Start-Process $exe -ArgumentList $quoted -Wait -PassThru -NoNewWindow -RedirectStandardError $err -RedirectStandardOutput $out
     $message = if (Test-Path $err) { [IO.File]::ReadAllText($err).Trim() } else { '' }
-    return [pscustomobject]@{ Code = $p.ExitCode; Error = $message }
+    $output = if (Test-Path $out) { @([IO.File]::ReadAllLines($out) | Where-Object { $_ }) } else { @() }
+    return [pscustomobject]@{ Code = $p.ExitCode; Error = $message; Output = $output }
 }
 
 function New-Folder($name) {
@@ -42,26 +39,20 @@ function Read-Ini($folder) {
 
 function Test-ReadOnly($folder) { return [bool]((Get-Item -LiteralPath $folder -Force).Attributes -band [IO.FileAttributes]::ReadOnly) }
 
-function Get-Colored {
+# colored.txt: "path TAB id" per line
+function Get-ColoredLines {
     $list = Join-Path $app 'colored.txt'
-    if (Test-Path $list) { return @(Get-Content $list -Encoding UTF8) }
+    if (Test-Path $list) { return @(Get-Content $list -Encoding UTF8 | Where-Object { $_.Trim() }) }
     return @()
 }
 
-# folders made read-only by the tests can't be deleted by Remove-Item without -Force
-function Remove-Work {
-    if (Test-Path $work) {
-        Get-ChildItem $work -Recurse -Force -Directory | ForEach-Object { $_.Attributes = 'Directory' }
-        Remove-Item $work -Recurse -Force
-    }
-}
+function Get-Colored { return @(Get-ColoredLines | ForEach-Object { ($_ -split "`t")[0] }) }
 
 try {
     New-Item -ItemType Directory -Force $app, $data | Out-Null
 
     Write-Host 'Build'
-    $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-    & $csc /nologo /target:winexe /optimize+ /codepage:65001 /reference:System.Drawing.dll "/out:$exe" `
+    & (Find-Csc) /nologo /target:winexe /optimize+ /codepage:65001 /reference:System.Drawing.dll "/out:$exe" `
         (Join-Path $root 'src\FolderColor.cs') (Join-Path $root 'src\IconBuilder.cs')
     Check 'FolderColor.exe compiles' ($LASTEXITCODE -eq 0)
     if ($LASTEXITCODE -ne 0) { throw 'Compilation failed.' }
@@ -95,6 +86,7 @@ try {
     Check 'desktop.ini is hidden and system' (($attrs -band 'Hidden') -and ($attrs -band 'System'))
     Check 'folder has the read-only bit' (Test-ReadOnly $plain)
     Check 'colored.txt lists the folder' ((Get-Colored) -contains $plain)
+    Check 'colored.txt keeps its file system id' (@((Get-ColoredLines) -match "^$([regex]::Escape($plain))`t[0-9a-f]{16}:[0-9a-f]{32}$").Count -eq 1)
 
     $r = Invoke-FolderColor @('set', 'blue', $plain)
     Check 'recolor replaces the line' (([regex]::Matches((Read-Ini $plain), 'IconResource=')).Count -eq 1 -and (Read-Ini $plain) -match 'blue\.ico')
@@ -186,6 +178,7 @@ try {
     $r = Invoke-FolderColor @('refresh')
     $ini = Read-Ini $old
     Check 'refresh exits 0 despite a missing folder' ($r.Code -eq 0)
+    Check 'refresh adds the id to old lines' (@((Get-ColoredLines) -match "^$([regex]::Escape($old))`t[0-9a-f]{16}:").Count -eq 1)
     Check 'refresh rewrites the icon line' ($ini -match '(?m)^IconResource=.*\\icons\\orange\.ico,0\r?$' -and $ini -match 'InfoTip=kept')
     if ($app.StartsWith($local + '\', [StringComparison]::OrdinalIgnoreCase)) {
         Check 'refresh drops the user name from the path' ($ini -match '%LOCALAPPDATA%' -and $ini -notmatch [regex]::Escape($local))
@@ -210,6 +203,36 @@ try {
         Write-Host '  skip  git is not installed'
     }
 
+    Write-Host 'Renamed and moved folders'
+    $first = New-Folder 'move\first'
+    $second = New-Folder 'move\second'
+    $doomed = New-Folder 'move\doomed'
+    # a non-English name too: the uninstaller prints what it resets
+    $named = Join-Path $data ('move\' + (-join [char[]](0x041F, 0x0430, 0x043F, 0x043A, 0x0430)))
+    New-Item -ItemType Directory -Force $named | Out-Null
+    Invoke-FolderColor @('set', 'blue', $first, $second, $doomed, $named) | Out-Null
+    $firstNow = Join-Path $data 'move\moved here\first renamed'
+    New-Item -ItemType Directory -Force (Split-Path $firstNow) | Out-Null
+    Move-Item -LiteralPath $first -Destination $firstNow
+    $secondNow = Join-Path $data 'move\second renamed'
+    Rename-Item -LiteralPath $second -NewName 'second renamed'
+    Get-ChildItem -LiteralPath $doomed -Force | Remove-Item -Force
+    (Get-Item -LiteralPath $doomed).Attributes = 'Directory'
+    Remove-Item -LiteralPath $doomed
+    $r = Invoke-FolderColor @('refresh')
+    $listed = Get-Colored
+    Check 'refresh finds a moved folder' ($listed -contains $firstNow -and -not ($listed -contains $first))
+    Check 'refresh finds a renamed folder' ($listed -contains $secondNow -and -not ($listed -contains $second))
+    $r = Invoke-FolderColor @('reset', $secondNow)
+    Check 'reset at the new place takes the line off' (-not ((Get-Colored) -contains $secondNow) -and $null -eq (Read-Ini $secondNow))
+    Rename-Item -LiteralPath $firstNow -NewName 'first again'
+    $firstNow = Join-Path $data 'move\moved here\first again'
+    $r = Invoke-FolderColor @('reset-all')
+    Check 'reset-all exits 0 with a deleted folder in the list' ($r.Code -eq 0)
+    Check 'reset-all resets a folder moved since the last refresh' ($null -eq (Read-Ini $firstNow) -and -not (Test-ReadOnly $firstNow))
+    Check 'reset-all prints the folders it reset, in any language' ($r.Output -contains $firstNow -and $r.Output -contains $named)
+    Check 'reset-all leaves colored.txt empty' ((Get-Colored).Count -eq 0)
+
     Write-Host 'Parallel runs'
     $parallel = 1..6 | ForEach-Object { New-Folder "parallel\$_" }
     $procs = $parallel | ForEach-Object { Start-Process $exe -ArgumentList @('set', 'purple', "`"$_`"") -PassThru -NoNewWindow -RedirectStandardError (Join-Path $work "stderr-$(Split-Path $_ -Leaf).txt") }
@@ -221,12 +244,6 @@ try {
     Check 'colored.txt is empty after resetting everything' (@(Get-Colored | Where-Object { $_.Trim() }).Count -eq 0)
 }
 finally {
-    Remove-Work
+    Remove-TestFolder $work
 }
-
-Write-Host ''
-if ($failures) {
-    Write-Host "$failures check(s) failed." -ForegroundColor Red
-    exit 1
-}
-Write-Host 'All checks passed.' -ForegroundColor Green
+Complete-Tests

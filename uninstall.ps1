@@ -27,26 +27,14 @@ $list = Join-Path $dest 'colored.txt'
 Set-Location $env:TEMP
 
 if (-not $KeepColors -and (Test-Path $exe) -and (Test-Path $list)) {
-    $folders = @(Get-Content $list -Encoding UTF8 | Where-Object { $_.Trim() -and (Test-Path -LiteralPath $_) })
-    # one FolderColor.exe per batch: each run waits a few seconds for Explorer to refresh;
-    # its errors land in a file and are shown here instead of in message boxes
-    $errLog = Join-Path $env:TEMP 'FolderColors-reset.txt'
-    $batch = @()
-    $length = 0
-    foreach ($folder in $folders + @($null)) {
-        if ($batch.Count -and ($null -eq $folder -or $length + $folder.Length -gt 20000)) {
-            Start-Process -FilePath $exe -ArgumentList (@('reset') + ($batch | ForEach-Object { "`"$_`"" })) -Wait -NoNewWindow -RedirectStandardError $errLog
-            $batch | ForEach-Object { Write-Host "Reset: $_" }
-            if ((Test-Path $errLog) -and (Get-Item $errLog).Length) { Get-Content $errLog | ForEach-Object { Write-Host $_ -ForegroundColor Yellow } }
-            $batch = @()
-            $length = 0
-        }
-        if ($null -ne $folder) {
-            $batch += $folder
-            $length += $folder.Length + 3
-        }
-    }
-    Remove-Item $errLog -ErrorAction SilentlyContinue
+    # FolderColor.exe finds folders renamed or moved since they were colored,
+    # prints each one it resets and writes errors to stderr instead of message boxes
+    $outLog = Join-Path $env:TEMP 'FolderColors-reset.txt'
+    $errLog = Join-Path $env:TEMP 'FolderColors-reset-errors.txt'
+    Start-Process -FilePath $exe -ArgumentList 'reset-all' -Wait -NoNewWindow -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+    Get-Content $outLog -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "Reset: $_" }
+    Get-Content $errLog -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+    Remove-Item $outLog, $errLog -ErrorAction SilentlyContinue
 }
 
 $classicKey = 'HKCU:\Software\Classes\Directory\shell\FolderColors'

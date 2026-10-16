@@ -3,10 +3,13 @@
 //   FolderColor.exe set <color> <folder>...   use icons\<color>.ico next to the exe
 //   FolderColor.exe reset <folder>...         back to the folder's previous icon
 //   FolderColor.exe refresh                   point colored folders at this install (run by install.ps1)
+//   FolderColor.exe reset-all                 reset every colored folder (run by uninstall.ps1)
 //   FolderColor.exe build-icons ...           see IconBuilder.cs (run by install.ps1)
 //
 // Called by the classic menu (one folder per process) and by the Windows 11
 // menu handler FolderColorMenu.dll (all selected folders in one process).
+// colored.txt next to the exe lists every colored folder, with its file
+// system id, so that a folder renamed or moved since is still found.
 //
 // Uses the standard Windows mechanism (the same one as Properties > Customize
 // > Change Icon): an IconResource line in the folder's hidden desktop.ini plus
@@ -22,6 +25,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using Microsoft.Win32.SafeHandles;
 
 static class FolderColor
 {
@@ -102,6 +106,11 @@ static class FolderColor
 
     static int Main(string[] args)
     {
+        // what the scripts read back from a redirected stdout/stderr: UTF-8, so
+        // folder names in any language survive (without a handle these go nowhere)
+        Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true });
+        Console.SetError(new StreamWriter(Console.OpenStandardError(), new UTF8Encoding(false)) { AutoFlush = true });
+
         string command = args.Length > 0 ? args[0] : "";
         if (command == "build-icons")
         {
@@ -120,7 +129,7 @@ static class FolderColor
         int first; // index of the first folder argument
         if (command == "set" && args.Length >= 3) first = 2;
         else if (command == "reset" && args.Length >= 2) first = 1;
-        else if (command == "refresh" && args.Length == 1) first = 1;
+        else if ((command == "refresh" || command == "reset-all") && args.Length == 1) first = 1;
         else
         {
             Fail("Usage:\n  FolderColor.exe set <color> <folder>...\n  FolderColor.exe reset <folder>...");
@@ -147,9 +156,17 @@ static class FolderColor
             try
             {
                 var colored = ColoredList.Load(Path.Combine(AppDir, "colored.txt"));
+                var folders = new List<string>();
+                for (int i = first; i < args.Length; i++) folders.Add(args[i]);
+                if (command == "refresh" || command == "reset-all")
+                {
+                    // folders renamed or moved since they were colored
+                    colored.Relocate();
+                    if (command == "reset-all") folders.AddRange(colored.Paths);
+                }
                 if (command == "refresh")
                 {
-                    foreach (string folder in new List<string>(colored.Paths))
+                    foreach (string folder in colored.Paths)
                     {
                         try
                         {
@@ -162,18 +179,25 @@ static class FolderColor
                     }
                 }
                 // one bad folder must not stop the rest of a multi-selection
-                for (int i = first; i < args.Length; i++)
+                foreach (string raw in folders)
                 {
                     try
                     {
-                        string folder = NormalizeFolder(args[i]);
+                        if (command == "reset-all" && !Directory.Exists(raw))
+                        {
+                            colored.Remove(raw); // deleted since
+                            continue;
+                        }
+                        string folder = NormalizeFolder(raw);
                         if (command == "set") Set(folder, args[1], colored);
                         else Reset(folder, colored);
                         changed.Add(folder);
+                        // uninstall.ps1 lists what it reset
+                        if (command == "reset-all") Console.Out.WriteLine(folder);
                     }
                     catch (UnauthorizedAccessException)
                     {
-                        errors.Add("No permission to change this folder: " + args[i]);
+                        errors.Add("No permission to change this folder: " + raw);
                     }
                     catch (Exception e)
                     {
@@ -566,18 +590,34 @@ static class FolderColor
     // --- bookkeeping ----------------------------------------------------------
 
     /// <summary>
-    /// colored.txt lists every recolored folder so uninstall can reset them.
-    /// Loaded once per run and saved atomically, under the process lock.
+    /// colored.txt lists every recolored folder so uninstall can reset them:
+    /// "path TAB id" per line, the id from FolderId (lines of 1.0/1.1 have
+    /// only the path). Loaded once per run and saved atomically, under the
+    /// process lock.
     /// </summary>
     sealed class ColoredList
     {
+        sealed class Entry
+        {
+            public string Path, Id;
+        }
+
         readonly string path;
-        readonly List<string> paths = new List<string>();
+        readonly List<Entry> entries = new List<Entry>();
         bool dirty;
 
         ColoredList(string path) { this.path = path; }
 
-        public IEnumerable<string> Paths { get { return paths; } }
+        /// <summary>A snapshot: the list may change while it is walked.</summary>
+        public List<string> Paths
+        {
+            get
+            {
+                var all = new List<string>();
+                foreach (Entry e in entries) all.Add(e.Path);
+                return all;
+            }
+        }
 
         public static ColoredList Load(string path)
         {
@@ -585,8 +625,15 @@ static class FolderColor
             try
             {
                 if (File.Exists(path))
+                {
                     foreach (string l in File.ReadAllLines(path, Encoding.UTF8))
-                        if (l.Trim().Length > 0 && list.IndexOf(l.Trim()) < 0) list.paths.Add(l.Trim());
+                    {
+                        string[] parts = l.Split('\t');
+                        string folder = parts[0].Trim();
+                        string id = parts.Length > 1 && parts[1].Trim().Length > 0 ? parts[1].Trim() : null;
+                        if (folder.Length > 0 && list.IndexOf(folder, id) < 0) list.entries.Add(new Entry { Path = folder, Id = id });
+                    }
+                }
             }
             catch (Exception)
             {
@@ -595,26 +642,71 @@ static class FolderColor
             return list;
         }
 
-        int IndexOf(string folder)
+        int IndexOf(string folder, string id)
         {
-            for (int i = 0; i < paths.Count; i++)
-                if (string.Equals(paths[i], folder, StringComparison.OrdinalIgnoreCase)) return i;
+            for (int i = 0; i < entries.Count; i++)
+                if ((id != null && entries[i].Id == id) || string.Equals(entries[i].Path, folder, StringComparison.OrdinalIgnoreCase))
+                    return i;
             return -1;
         }
 
         public void Add(string folder)
         {
-            if (IndexOf(folder) >= 0) return;
-            paths.Add(folder);
-            dirty = true;
+            string id = FolderId.Of(folder);
+            int i = IndexOf(folder, id);
+            if (i < 0)
+            {
+                entries.Add(new Entry { Path = folder, Id = id });
+                dirty = true;
+            }
+            else if (entries[i].Path != folder || entries[i].Id != id)
+            {
+                // colored again after a move: one line, the current path
+                entries[i].Path = folder;
+                entries[i].Id = id;
+                dirty = true;
+            }
         }
 
         public void Remove(string folder)
         {
-            int i = IndexOf(folder);
-            if (i < 0) return;
-            paths.RemoveAt(i);
-            dirty = true;
+            string id = FolderId.Of(folder);
+            for (int i = entries.Count - 1; i >= 0; i--)
+            {
+                if ((id != null && entries[i].Id == id) || string.Equals(entries[i].Path, folder, StringComparison.OrdinalIgnoreCase))
+                {
+                    entries.RemoveAt(i);
+                    dirty = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Points entries at where their folders are now: a folder renamed or
+        /// moved on the same drive keeps its id. Lines from 1.0/1.1 get their id.
+        /// </summary>
+        public void Relocate()
+        {
+            foreach (Entry e in entries)
+            {
+                string id = FolderId.Of(e.Path);
+                if (id != null && (e.Id == null || id == e.Id))
+                {
+                    if (e.Id == null)
+                    {
+                        e.Id = id;
+                        dirty = true;
+                    }
+                    continue;
+                }
+                if (e.Id == null) continue;
+                string moved = FolderId.Find(e.Id, e.Path);
+                if (moved != null && moved != e.Path)
+                {
+                    e.Path = moved;
+                    dirty = true;
+                }
+            }
         }
 
         public void Save()
@@ -622,15 +714,124 @@ static class FolderColor
             if (!dirty) return;
             try
             {
+                var lines = new List<string>();
+                foreach (Entry e in entries) lines.Add(e.Id != null ? e.Path + "\t" + e.Id : e.Path);
                 // a crash mid-write leaves the old list, never half of one
                 string tmp = path + ".tmp";
-                File.WriteAllLines(tmp, paths.ToArray(), new UTF8Encoding(false));
+                File.WriteAllLines(tmp, lines.ToArray(), new UTF8Encoding(false));
                 if (File.Exists(path)) File.Replace(tmp, path, null, true);
                 else File.Move(tmp, path);
             }
             catch (Exception)
             {
                 // bookkeeping only
+            }
+        }
+    }
+
+    /// <summary>
+    /// A folder's identity on its drive: the volume serial number and the
+    /// 128-bit file id, which stay the same when the folder is renamed or moved
+    /// on that drive (NTFS, ReFS). Written as "serial:id" in hex.
+    /// </summary>
+    static class FolderId
+    {
+        [StructLayout(LayoutKind.Explicit, Size = 24)]
+        struct FILE_ID_INFO
+        {
+            [FieldOffset(0)] public ulong VolumeSerialNumber;
+            [FieldOffset(8)] public ulong IdLow;
+            [FieldOffset(16)] public ulong IdHigh;
+        }
+
+        [StructLayout(LayoutKind.Explicit, Size = 24)]
+        struct FILE_ID_DESCRIPTOR
+        {
+            [FieldOffset(0)] public uint dwSize;
+            [FieldOffset(4)] public int Type;
+            [FieldOffset(8)] public ulong IdLow;
+            [FieldOffset(16)] public ulong IdHigh;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int infoClass, out FILE_ID_INFO info, uint size);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern SafeFileHandle OpenFileById(SafeFileHandle volumeHint, ref FILE_ID_DESCRIPTOR id, uint access, uint share, IntPtr security, uint flags);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder path, uint size, uint flags);
+
+        const uint FILE_READ_ATTRIBUTES = 0x80;
+        const uint FILE_SHARE_ALL = 0x7; // read, write, delete: never in anyone's way
+        const uint OPEN_EXISTING = 3;
+        const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000; // needed to open a folder
+        const int FileIdInfo = 18;
+        const int ExtendedFileIdType = 2;
+
+        static SafeFileHandle Open(string folder)
+        {
+            return CreateFileW(folder, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+        }
+
+        static string IdOf(SafeFileHandle handle)
+        {
+            FILE_ID_INFO info;
+            if (!GetFileInformationByHandleEx(handle, FileIdInfo, out info, (uint)Marshal.SizeOf(typeof(FILE_ID_INFO)))) return null;
+            if (info.IdLow == 0 && info.IdHigh == 0) return null;
+            return string.Format("{0:x16}:{1:x16}{2:x16}", info.VolumeSerialNumber, info.IdHigh, info.IdLow);
+        }
+
+        /// <summary>The id of an existing folder, or null (missing, or a drive without stable ids).</summary>
+        public static string Of(string folder)
+        {
+            try
+            {
+                using (SafeFileHandle h = Open(folder))
+                    return h.IsInvalid ? null : IdOf(h);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Where the folder with this id is now, on the drive of its old path; null if gone.</summary>
+        public static string Find(string id, string oldPath)
+        {
+            try
+            {
+                string[] parts = id.Split(':');
+                if (parts.Length != 2 || parts[1].Length != 32) return null;
+                var d = new FILE_ID_DESCRIPTOR();
+                d.dwSize = (uint)Marshal.SizeOf(typeof(FILE_ID_DESCRIPTOR));
+                d.Type = ExtendedFileIdType;
+                d.IdHigh = Convert.ToUInt64(parts[1].Substring(0, 16), 16);
+                d.IdLow = Convert.ToUInt64(parts[1].Substring(16), 16);
+
+                using (SafeFileHandle volume = Open(Path.GetPathRoot(oldPath)))
+                {
+                    if (volume.IsInvalid) return null;
+                    using (SafeFileHandle h = OpenFileById(volume, ref d, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, IntPtr.Zero, FILE_FLAG_BACKUP_SEMANTICS))
+                    {
+                        // the same id on another drive is another folder
+                        if (h.IsInvalid || IdOf(h) != id) return null;
+                        var buffer = new StringBuilder(32768);
+                        uint n = GetFinalPathNameByHandleW(h, buffer, (uint)buffer.Capacity, 0);
+                        if (n == 0 || n >= buffer.Capacity) return null;
+                        string found = buffer.ToString();
+                        if (found.StartsWith(@"\\?\UNC\")) found = @"\\" + found.Substring(8);
+                        else if (found.StartsWith(@"\\?\")) found = found.Substring(4);
+                        return Directory.Exists(found) ? found : null;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                return null;
             }
         }
     }

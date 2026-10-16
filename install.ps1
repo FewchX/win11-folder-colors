@@ -3,9 +3,9 @@
 #   - FolderColor.exe, compiled here with the C# compiler that ships with
 #     Windows (.NET Framework 4); it does the actual recoloring;
 #   - the icons, built here from this Windows' own folder icon;
-#   - the Windows 11 context menu entry: bin\FolderColorMenu.dll, registered
-#     through a local package (package\AppxManifest.xml). Windows only accepts
-#     an unsigned local package with Developer Mode on;
+#   - the Windows 11 context menu entry: bin\<x64|arm64>\FolderColorMenu.dll,
+#     registered through a local package (package\AppxManifest.xml). Windows
+#     only accepts an unsigned local package with Developer Mode on;
 #   - without Developer Mode (or on Windows 10), a classic context menu entry
 #     in the registry instead.
 # Safe to re-run: rebuilds everything and re-registers. Folders that are
@@ -46,6 +46,14 @@ function Test-DeveloperMode {
 
 $build = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuildNumber
 $windows11 = $build -ge 22000
+# the PC's CPU, also when this PowerShell runs emulated (x64 on an ARM64 PC);
+# the menu DLL has to match File Explorer's
+$arch = switch ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE) {
+    'AMD64' { 'x64' }
+    'ARM64' { 'arm64' }
+    default { $null } # 32-bit Windows 10: the classic menu needs no DLL
+}
+$packageWanted = $windows11 -and -not $Classic -and $arch
 $version = ([xml](Get-Content (Join-Path $src 'package\AppxManifest.xml') -Raw)).Package.Identity.Version -replace '\.0$', ''
 
 # files from a downloaded zip carry the "from the internet" mark; the DLL
@@ -110,18 +118,22 @@ function Get-ReleaseDll($target) {
         $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($actual -ne $expected) { throw "Checksum mismatch: expected $expected, got $actual." }
         Expand-Archive $zip (Join-Path $work 'x')
+        $released = Join-Path $work "x\bin\$arch\FolderColorMenu.dll"
+        # releases before 1.2 had only the x64 DLL, in bin\
+        if (-not (Test-Path $released) -and $arch -eq 'x64') { $released = Join-Path $work 'x\bin\FolderColorMenu.dll' }
+        if (-not (Test-Path $released)) { throw "Release $($release.tag_name) has no FolderColorMenu.dll for $arch." }
         New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
-        Copy-Item (Join-Path $work 'x\bin\FolderColorMenu.dll') $target
+        Copy-Item $released $target
     }
     finally {
         Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
-$dll = Join-Path $src 'bin\FolderColorMenu.dll'
-if (-not (Test-Path $dll)) {
+$dll = Join-Path $src "bin\$arch\FolderColorMenu.dll"
+if ($packageWanted -and -not (Test-Path $dll)) {
     $python = Test-ZigToolchain
-    if ($python) { & (Join-Path $src 'build.ps1') -Python $python }
+    if ($python) { & (Join-Path $src 'build.ps1') -Python $python -Arch $arch }
     else {
         try { Get-ReleaseDll $dll }
         catch { throw "Couldn't download FolderColorMenu.dll: $_`nDownload win11-folder-colors.zip from https://github.com/$repo/releases/latest and run install.cmd from it." }
@@ -149,7 +161,7 @@ try {
     # FolderColor.exe is a GUI program: Start-Process -Wait is what waits for it
     $p = Start-Process $built -Wait -PassThru -NoNewWindow -RedirectStandardError $errLog -ArgumentList (
         @('build-icons', "`"$(Join-Path $dest 'icons')`"", "`"$(Join-Path $dest 'Assets')`"") + $specs)
-    if ($p.ExitCode -ne 0) { throw "Building the icons failed: $(Get-Content $errLog -Raw)" }
+    if ($p.ExitCode -ne 0) { throw "Building the icons failed: $(Get-Content $errLog -Raw -Encoding UTF8)" }
 
     # --- release the previous install --------------------------------------------
     # a recolor still waiting for Explorer to refresh holds the old exe
@@ -165,9 +177,18 @@ try {
 
     # --- files -------------------------------------------------------------------
     Copy-Item $built $exe -Force
-    Copy-Item (Join-Path $src 'package\AppxManifest.xml') $dest -Force
-    Copy-Item $dll $dest -Force
     Copy-Item (Join-Path $src 'uninstall.ps1') $dest -Force
+    if ($packageWanted) {
+        Copy-Item $dll $dest -Force
+        # the package declares the CPU its DLL is for
+        $manifest = [IO.File]::ReadAllText((Join-Path $src 'package\AppxManifest.xml'))
+        $manifest = $manifest -replace 'ProcessorArchitecture="[^"]*"', "ProcessorArchitecture=`"$arch`""
+        [IO.File]::WriteAllText((Join-Path $dest 'AppxManifest.xml'), $manifest, (New-Object Text.UTF8Encoding $false))
+    }
+    else {
+        # left from an earlier install with the package
+        Remove-Item (Join-Path $dest 'FolderColorMenu.dll'), (Join-Path $dest 'AppxManifest.xml') -ErrorAction SilentlyContinue
+    }
 }
 finally {
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
@@ -186,7 +207,7 @@ Remove-Item $refreshLog -ErrorAction SilentlyContinue
 # --- Windows 11 menu (package) -------------------------------------------------------
 $packaged = $false
 $answer = ''
-if ($windows11 -and -not $Classic) {
+if ($packageWanted) {
     if (-not (Test-DeveloperMode)) {
         Write-Host ''
         Write-Host 'The Windows 11 context menu needs Developer Mode, which is off.' -ForegroundColor Yellow
@@ -289,8 +310,9 @@ $list = Join-Path $dest 'colored.txt'
 if ($ignored -and $git -and (Test-Path $list)) {
     $ErrorActionPreference = 'Continue'
     $cleaned = @{}
-    foreach ($folder in Get-Content $list -Encoding UTF8) {
-        if (-not $folder.Trim() -or -not (Test-Path -LiteralPath $folder)) { continue }
+    foreach ($line in Get-Content $list -Encoding UTF8) {
+        $folder = ($line -split "`t")[0].Trim() # "path TAB id"
+        if (-not $folder -or -not (Test-Path -LiteralPath $folder)) { continue }
         $common = & $git.Source -C $folder rev-parse --path-format=absolute --git-common-dir 2>$null
         if ($LASTEXITCODE -ne 0 -or -not "$common".Trim()) { continue }
         $exclude = Join-Path ("$common".Trim() -replace '/', '\') 'info\exclude'
