@@ -39,6 +39,50 @@ $windows11 = $build -ge 22000
 # files from a downloaded zip carry the "from the internet" mark
 Get-ChildItem $src -Recurse -File | Unblock-File
 
+# --- FolderColorMenu.dll ------------------------------------------------------------
+# Release zips include it. A source download (git clone, "Code > Download ZIP")
+# doesn't: build it when the toolchain is there, otherwise take the one from
+# the latest release. Everything that can fail runs before the previous
+# install is touched.
+function Test-ZigToolchain {
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $python) { return $null }
+    # the Microsoft Store "python" stub fails here too; native stderr isn't an error
+    $ErrorActionPreference = 'Continue'
+    & $python.Source -c 'import ziglang' 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { return $python.Source }
+    return $null
+}
+
+function Get-ReleaseDll($target) {
+    $url = 'https://github.com/FewchX/win11-folder-colors/releases/latest/download/win11-folder-colors.zip'
+    Write-Host "Downloading FolderColorMenu.dll from the latest release ($url)..."
+    $ProgressPreference = 'SilentlyContinue' # the progress bar makes downloads slow in Windows PowerShell
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $work = Join-Path ([IO.Path]::GetTempPath()) ('win11-folder-colors-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory $work | Out-Null
+    try {
+        Invoke-WebRequest $url -OutFile (Join-Path $work 'release.zip') -UseBasicParsing
+        Expand-Archive (Join-Path $work 'release.zip') $work
+        New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+        Copy-Item (Join-Path $work 'bin\FolderColorMenu.dll') $target
+    }
+    finally {
+        Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$dll = Join-Path $src 'bin\FolderColorMenu.dll'
+if (-not (Test-Path $dll)) {
+    $python = Test-ZigToolchain
+    if ($python) { & (Join-Path $src 'build.ps1') -Python $python }
+    else {
+        try { Get-ReleaseDll $dll }
+        catch { throw "Couldn't download FolderColorMenu.dll: $_`nDownload win11-folder-colors.zip from https://github.com/FewchX/win11-folder-colors/releases/latest and run install.cmd from it." }
+    }
+}
+if (-not (Test-Path $csc)) { throw '.NET Framework 4 C# compiler not found (csc.exe).' }
+
 # --- release the previous install --------------------------------------------
 # the registered package keeps FolderColorMenu.dll loaded in a COM surrogate;
 # stop it first, or Remove-AppxPackage waits ~90 s for it to exit on its own
@@ -48,15 +92,6 @@ Get-Process dllhost -ErrorAction SilentlyContinue |
 if ($windows11) { Get-AppxPackage -Name $packageName | Remove-AppxPackage }
 
 # --- build ---------------------------------------------------------------------
-$dll = Join-Path $src 'bin\FolderColorMenu.dll'
-if (-not (Test-Path $dll)) {
-    try { & (Join-Path $src 'build.ps1') }
-    catch {
-        throw "bin\FolderColorMenu.dll is missing. Install from the release zip (see README), or build it: $_"
-    }
-}
-if (-not (Test-Path $csc)) { throw '.NET Framework 4 C# compiler not found (csc.exe).' }
-
 Write-Host 'Building FolderColor.exe...'
 New-Item -ItemType Directory -Force $dest | Out-Null
 & $csc /nologo /target:winexe /optimize+ /codepage:65001 /reference:System.Drawing.dll "/out:$exe" `

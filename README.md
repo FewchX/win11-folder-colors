@@ -26,6 +26,10 @@ irm https://raw.githubusercontent.com/FewchX/win11-folder-colors/main/get.ps1 | 
 double-click `install.cmd`. If Windows shows "Windows protected your PC", click
 **More info → Run anyway**: the scripts aren't signed.
 
+The source code (**Code → Download ZIP** or `git clone`) installs the same way with
+`install.cmd`. It has no prebuilt files, so the installer downloads the one it needs,
+`FolderColorMenu.dll`, from the latest release.
+
 ### Developer Mode
 
 The new Windows 11 menu only shows entries from installed app packages. Folder Colors
@@ -109,15 +113,15 @@ Only `FolderColorMenu.dll` comes prebuilt in the release zip, built by
 
 ## Build from source
 
-Installing from a clone needs `bin\FolderColorMenu.dll`. `install.ps1` builds it automatically
+Only `bin\FolderColorMenu.dll` needs a C++ compiler. When it's missing, `install.ps1` builds it
 if Python with the [ziglang](https://pypi.org/project/ziglang/) package is available
 (`pip install ziglang==0.16.0`, which includes a complete C++ toolchain, no Visual Studio
-needed):
+needed), and otherwise downloads it from the latest release:
 
 ```powershell
 git clone https://github.com/FewchX/win11-folder-colors
 cd win11-folder-colors
-.\build.ps1      # optional: install.ps1 runs it if the DLL is missing
+.\build.ps1      # optional: builds bin\FolderColorMenu.dll
 .\install.ps1
 ```
 

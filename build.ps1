@@ -1,5 +1,6 @@
 # Builds bin\FolderColorMenu.dll, the Windows 11 context menu handler.
-# Only needed when installing from a git clone: release zips already contain it.
+# Release zips already contain it. install.ps1 runs this when the DLL is missing
+# and the toolchain below is available, and downloads the released DLL otherwise.
 #
 # Needs Python with the ziglang package (pip install ziglang==0.16.0), which
 # brings a complete C++ toolchain for Windows - no Visual Studio required.
